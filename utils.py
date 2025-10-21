@@ -32,8 +32,6 @@ def plot_histograms(df, columns, n_rows=2, title="Numeric Variables' Histograms"
     plt.tight_layout()
     plt.show()
 
-<<<<<<< HEAD
-
 def plot_daily_trends(
     df,
     date_cols,
@@ -90,9 +88,6 @@ def plot_daily_trends(
 
     fig.show()
 
-=======
-# To consider numeric discrete values as year and month
->>>>>>> 37fb2ad (add data_exploration.ipyndb)
 
 def plot_histograms(df, columns, n_rows=2, title="Numeric Variables' Histograms", bins=20, max_unique_discrete=20,    figsize = (20, 11)):
     """
