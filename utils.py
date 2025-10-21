@@ -5,11 +5,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import itertools
 import pandas as pd 
-<<<<<<< HEAD
 import plotly.graph_objects as go
 
-=======
->>>>>>> 37fb2ad (add data_exploration.ipyndb)
 
 def plot_histograms(df, columns, n_rows=2, title="Numeric Variables' Histograms", bins=20):
     # Grid layout
