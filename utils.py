@@ -7,6 +7,10 @@ import itertools
 import pandas as pd 
 import plotly.graph_objects as go
 import re
+from sklearn.base import clone
+from scipy.cluster.hierarchy import linkage, dendrogram
+from sklearn.metrics import silhouette_score, silhouette_samples
+from matplotlib import cm
 
 def plot_histograms(df, columns, n_rows=2, title="Numeric Variables' Histograms", bins=20):
     # Grid layout
@@ -637,3 +641,243 @@ def compute_seasonal_share_trends(
     )
 
     return wide.reset_index().round(2)
+
+
+def get_ss(df, feats):
+    """
+    Calculate the sum of squares (SS) for the given DataFrame.
+
+    The sum of squares is computed as the sum of the variances of each column
+    multiplied by the number of non-NA/null observations minus one.
+
+    Parameters:
+    df (pandas.DataFrame): The input DataFrame for which the sum of squares is to be calculated.
+    feats (list of str): A list of feature column names to be used in the calculation.
+
+    Returns:
+    float: The sum of squares of the DataFrame.
+    """
+    df_ = df[feats]
+    ss = np.sum(df_.var() * (df_.count() - 1))
+    
+    return ss 
+
+
+def get_ssb(df, feats, label_col):
+    """
+    Calculate the between-group sum of squares (SSB) for the given DataFrame.
+    The between-group sum of squares is computed as the sum of the squared differences
+    between the mean of each group and the overall mean, weighted by the number of observations
+    in each group.
+
+    Parameters:
+    df (pandas.DataFrame): The input DataFrame containing the data.
+    feats (list of str): A list of feature column names to be used in the calculation.
+    label_col (str): The name of the column in the DataFrame that contains the group labels.
+    
+    Returns
+    float: The between-group sum of squares of the DataFrame.
+    """
+    
+    ssb_i = 0
+    for i in np.unique(df[label_col]):
+        df_ = df.loc[:, feats]
+        X_ = df_.values
+        X_k = df_.loc[df[label_col] == i].values
+        
+        ssb_i += (X_k.shape[0] * (np.square(X_k.mean(axis=0) - X_.mean(axis=0))) )
+
+    ssb = np.sum(ssb_i)
+    
+
+    return ssb
+
+
+def get_ssw(df, feats, label_col):
+    """
+    Calculate the sum of squared within-cluster distances (SSW) for a given DataFrame.
+
+    Parameters:
+    df (pandas.DataFrame): The input DataFrame containing the data.
+    feats (list of str): A list of feature column names to be used in the calculation.
+    label_col (str): The name of the column containing cluster labels.
+
+    Returns:
+    float: The sum of squared within-cluster distances (SSW).
+    """
+    feats_label = feats+[label_col]
+
+    df_k = df[feats_label].groupby(by=label_col).apply(
+        lambda col: get_ss(col, feats), 
+        include_groups=False
+        )
+
+    return df_k.sum()
+
+def get_rsq(df, feats, label_col):
+    """
+    Calculate the R-squared value for a given DataFrame and features.
+    
+    Parameters:
+    df (pd.DataFrame): The input DataFrame containing the data.
+    feats (list): A list of feature column names to be used in the calculation.
+    label_col (str): The name of the column containing the labels or cluster assignments.
+    
+    Returns:
+    float: The R-squared value, representing the proportion of variance explained by the clustering.
+    """
+    df_sst_ = get_ss(df, feats)  # get total sum of squares
+    df_ssw_ = get_ssw(df, feats, label_col)  # get ss within
+    df_ssb_ = df_sst_ - df_ssw_  # get ss between
+    # r2 = ssb/sst
+    return (df_ssb_ / df_sst_)
+
+
+def get_r2_scores(df, feats, clusterer, min_k=1, max_k=9):
+    """
+    Loop over different values of k. To be used with sklearn clusterers.
+    """
+    r2_clust = {}
+    for n in range(min_k, max_k):
+        clust = clone(clusterer).set_params(n_clusters=n)
+        labels = clust.fit_predict(df)
+        df_concat = pd.concat([df,
+                               pd.Series(labels, name='labels', index=df.index)], axis=1)
+        r2_clust[n] = get_rsq(df_concat, feats, 'labels')
+    return r2_clust
+
+
+def plot_dendrogram(linkage_matrix, y_threshold=None, distance="euclidian"):
+    sns.set()
+    fig = plt.figure(figsize=(11,5))
+    # The Dendrogram parameters need to be tuned
+        # You can play with 'truncate_mode' and 'p' define what level the dendrogram shows
+        # above_threshold_color='k' forces black color for the lines above the threshold)
+    dendrogram(linkage_matrix, truncate_mode='level', p=5, color_threshold=y_threshold, above_threshold_color='k')
+    if y_threshold:
+        plt.hlines(y_threshold, 0, 1000, colors="r", linestyles="dashed")
+    plt.title(f'Hierarchical Clustering Dendrogram: Ward Linkage', fontsize=21)
+    plt.xlabel('Number of points in node (or index of point if no parenthesis)')
+    plt.ylabel(f'{distance.title()} Distance', fontsize=13)
+    plt.show()
+
+
+def compute_avg_silhouette_scores(df, cluster_factory,range_clusters=range(10)
+                              ):
+    """
+    Compute average silhouette scores for a range of cluster numbers.
+
+    Returns a pandas DataFrame with columns: ['n_clusters', 'avg_silhouette'].
+    """
+    results = []
+
+    for nclus in range_clusters:
+        # Skip invalid case
+        if nclus <= 1:
+            continue
+
+        clust = cluster_factory(n_clusters=nclus)
+        #if hasattr(clust,"fit_predict"):
+        cluster_labels = clust.fit_predict(df)
+        
+        silhouette_avg = silhouette_score(df, cluster_labels)
+        results.append({"n_clusters": nclus, "avg_silhouette": silhouette_avg})
+
+        # Optional: print here if you want
+        print(f"For n_clusters = {nclus}, the average silhouette_score is: {silhouette_avg:.4f}")
+
+    return pd.DataFrame(results)
+
+
+def plot_silhouette_for_k(
+    df,
+    n_clusters,
+    clusterer_factory,
+):
+    """
+    Plot silhouette diagram for a given number of clusters, using any clustering
+    algorithm following the sklearn API.
+
+    """
+    if n_clusters <= 1:
+        raise ValueError("n_clusters must be greater than 1 to compute silhouette.")
+
+    
+
+    # Create and fit clusterer
+    clusterer = clusterer_factory(n_clusters)
+    if hasattr(clusterer, "fit_predict"):
+        cluster_labels = clusterer.fit_predict(df)
+    else:
+        clusterer.fit(df)
+        cluster_labels = clusterer.labels_
+
+    silhouette_avg = silhouette_score(df, cluster_labels)
+    sample_silhouette_values = silhouette_samples(df, cluster_labels)
+
+    plt.figure(figsize=(13, 7))
+
+    y_lower = 10
+    for i in range(n_clusters):
+        ith_cluster_silhouette_values = sample_silhouette_values[cluster_labels == i]
+        ith_cluster_silhouette_values.sort()
+
+        size_cluster_i = ith_cluster_silhouette_values.shape[0]
+        y_upper = y_lower + size_cluster_i
+
+        color = cm.nipy_spectral(float(i) / n_clusters)
+        plt.fill_betweenx(
+            np.arange(y_lower, y_upper),
+            0,
+            ith_cluster_silhouette_values,
+            facecolor=color,
+            edgecolor=color,
+            alpha=0.7,
+        )
+
+        plt.text(-0.05, y_lower + 0.5 * size_cluster_i, str(i))
+        y_lower = y_upper + 10
+
+    plt.title(f"Silhouette plot for {n_clusters} clusters")
+    plt.xlabel("Silhouette coefficient values")
+    plt.ylabel("Cluster label")
+
+    plt.axvline(x=silhouette_avg, color="red", linestyle="--")
+
+    xmin = np.round(sample_silhouette_values.min() - 0.1, 2)
+    xmax = np.round(sample_silhouette_values.max() + 0.1, 2)
+    plt.xlim([xmin, xmax])
+    plt.xticks(np.arange(xmin, xmax, 0.1))
+
+    plt.ylim([0, len(df) + (n_clusters + 1) * 10])
+    plt.yticks([])
+
+    plt.show()
+
+def plot_heatmap_barplot_clusters(df):
+    sns.set(style="whitegrid")
+    label_counts = df['labels'].value_counts().sort_index()
+
+    fig, axes = plt.subplots(1,2, figsize=(12,5), width_ratios=[.6,.4], tight_layout=True)
+    pop_mean = df.mean()
+    hc_profile = df.groupby('labels').mean().T
+    df_concat_pop = pd.concat([hc_profile, 
+                           pd.Series(pop_mean, 
+                                        index=hc_profile.index, 
+                                        name='Population Mean'
+                            )
+                           ],
+                           axis=1)
+    
+    sns.heatmap(df_concat_pop, ax=axes[0], center=0, cmap='PiYG')
+
+    axes[0].set_xlabel("Cluster Labels")
+    axes[0].set_title("Heatmap of Cluster Means")
+
+
+    sns.barplot(x=label_counts.index, y=label_counts.values, ax=axes[1])
+    axes[1].set_title("Cluster Sizes")
+    axes[1].set_xlabel("Cluster Labels")
+
+    fig.suptitle("Cluster Profiling:\nHierarchical Clustering with 4 Clusters")
+    plt.show()
