@@ -11,7 +11,16 @@ from sklearn.base import clone
 from scipy.cluster.hierarchy import linkage, dendrogram
 from sklearn.metrics import silhouette_score, silhouette_samples
 from matplotlib import cm
+from sklearn.neighbors import NearestNeighbors
+from sklearn.mixture import GaussianMixture
+from pandas.plotting import parallel_coordinates
+from sklearn.metrics import (
+    silhouette_score,
+    calinski_harabasz_score,
+    davies_bouldin_score
+)
 
+import pandas as pd
 def plot_histograms(df, columns, n_rows=2, title="Numeric Variables' Histograms", bins=20):
     # Grid layout
     sns.set_style("white")
@@ -747,6 +756,66 @@ def get_r2_scores(df, feats, clusterer, min_k=1, max_k=9):
     return r2_clust
 
 
+def compute_r2_scores(
+    df,
+    feature_cols,
+    param_values,
+    cluster_factory,
+    param_name="param",
+ 
+):
+    """
+    Computes R2 scores (or any custom scoring metric) for a range of clustering parameter values.
+    """
+    #results = {}
+    results=[]
+    for val in param_values:
+        clusterer = cluster_factory(val)
+
+        # Fit clustering
+        if hasattr(clusterer, "fit_predict"):
+            labels = clusterer.fit_predict(df[feature_cols])
+        else:
+            clusterer.fit(df[feature_cols])
+            labels = clusterer.labels_
+
+        df_concat = pd.concat(
+            [df[feature_cols], pd.Series(labels, name="labels", index=df.index)],
+            axis=1
+        )
+        
+        score = get_rsq(df_concat, feature_cols, "labels")
+        result={}
+        result[param_name]=val
+        result["score"] = score
+        results.append(result)
+
+        print(f"{param_name}={val} -> score: {score:.4f}")
+    return pd.DataFrame(results)
+    #return pd.DataFrame(results,index=[0]).T
+    #return pd.DataFrame(results, index=[0]).T.rename(columns={0: param_name,1: "score"})
+
+
+def plot_r2_scores(r2_df, param_name="Parameter", figsize=(10,6), title=None):
+    """
+    Plots the R² scores returned by compute_r2_scores.
+    """
+    plt.figure(figsize=figsize)
+    plt.plot(r2_df.index, r2_df['score'], marker='o')
+
+    plt.xlabel(param_name, fontsize=12)
+    plt.ylabel("R² Score", fontsize=12)
+    plt.grid(True)
+
+    if title:
+        plt.title(title, fontsize=14)
+    else:
+        plt.title(f"R² Scores Across Values of {param_name}", fontsize=14)
+
+    plt.show()
+
+
+
 def plot_dendrogram(linkage_matrix, y_threshold=None, distance="euclidian"):
     sns.set()
     fig = plt.figure(figsize=(11,5))
@@ -762,32 +831,138 @@ def plot_dendrogram(linkage_matrix, y_threshold=None, distance="euclidian"):
     plt.show()
 
 
-def compute_avg_silhouette_scores(df, cluster_factory,range_clusters=range(10)
-                              ):
-    """
-    Compute average silhouette scores for a range of cluster numbers.
+# def compute_avg_silhouette_scores(df, cluster_factory,range_clusters=range(10)
+#                               ):
+#     """
+#     Compute average silhouette scores for a range of cluster numbers.
 
-    Returns a pandas DataFrame with columns: ['n_clusters', 'avg_silhouette'].
+#     Returns a pandas DataFrame with columns: ['n_clusters', 'avg_silhouette'].
+#     """
+#     results = []
+
+#     for nclus in range_clusters:
+#         # Skip invalid case
+#         if nclus <= 1:
+#             continue
+
+#         clust = cluster_factory(n_clusters=nclus)
+#         #if hasattr(clust,"fit_predict"):
+#         cluster_labels = clust.fit_predict(df)
+        
+#         silhouette_avg = silhouette_score(df, cluster_labels)
+#         results.append({"n_clusters": nclus, "avg_silhouette": silhouette_avg})
+
+#         # Optional: print here if you want
+#         print(f"For n_clusters = {nclus}, the average silhouette_score is: {silhouette_avg:.4f}")
+
+#     return pd.DataFrame(results)
+
+
+def compute_avg_silhouette_scores(
+    df,
+    param_values,
+    cluster_factory,
+    param_name="param",
+):
+    """
+    Compute average silhouette scores for a range of parameter values.
     """
     results = []
 
-    for nclus in range_clusters:
-        # Skip invalid case
-        if nclus <= 1:
+    for val in param_values:
+        clust = cluster_factory(val)
+
+        # fit_predict if available, otherwise fit + labels_
+        if hasattr(clust, "fit_predict"):
+            labels = clust.fit_predict(df)
+        else:
+            clust.fit(df)
+            labels = clust.labels_
+
+        n_clusters = len(np.unique(labels))
+        if n_clusters < 2:
+            print(f"Skipping {param_name}={val}: only {n_clusters} cluster found.")
             continue
 
-        clust = cluster_factory(n_clusters=nclus)
-        #if hasattr(clust,"fit_predict"):
-        cluster_labels = clust.fit_predict(df)
-        
-        silhouette_avg = silhouette_score(df, cluster_labels)
-        results.append({"n_clusters": nclus, "avg_silhouette": silhouette_avg})
+        silhouette_avg = silhouette_score(df, labels)
+        results.append(
+            {
+                param_name: val,
+                "n_clusters": n_clusters,
+                "avg_silhouette": silhouette_avg,
+            }
+        )
 
-        # Optional: print here if you want
-        print(f"For n_clusters = {nclus}, the average silhouette_score is: {silhouette_avg:.4f}")
+        print(
+            f"For {param_name} = {val}, "
+            f"n_clusters = {n_clusters}, "
+            f"average silhouette_score = {silhouette_avg:.4f}"
+        )
 
     return pd.DataFrame(results)
 
+
+
+
+def plot_silhouette_results(
+    results_df,
+    x_col="n_clusters",
+    y_col="avg_silhouette",
+    hue_param_name=None,
+    param_name=None,
+    highlight_best=True,
+    figsize=(10, 6),
+    title="Silhouette Score Across Parameter Values",
+    xlabel=None,
+    ylabel="Average Silhouette Score",
+    marker="o"
+):
+    """
+    Plot silhouette results with optional best-point annotation and labels.
+
+    """
+
+    if param_name is None:
+        param_name = x_col  # default label
+
+    if xlabel is None:
+        xlabel = param_name.replace("_", " ").title()
+
+    plt.figure(figsize=figsize)
+
+    sns.lineplot(
+        data=results_df,
+        x=x_col,
+        y=y_col,
+        hue=hue_param_name,
+        marker=marker,
+
+        sort=False
+    )
+
+    # Highlight and annotate best parameter
+    if highlight_best:
+        best_row = results_df.loc[results_df[y_col].idxmax()]
+        bx, by = best_row[x_col], best_row[y_col]
+
+        label = f"  {param_name} = {bx}; Score = {by:.2f}"
+
+        plt.scatter(bx, by, color="red", s=100, edgecolor="black", zorder=5)
+        plt.text(
+            bx, by,
+            label,
+            fontsize=11,
+            ha="left",
+            va="bottom",
+            color="black",
+            bbox=dict(facecolor="white", alpha=0.7, edgecolor="gray")
+        )
+
+    plt.title(title, fontsize=14)
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    plt.grid(True)
+    plt.show()
 
 def plot_silhouette_for_k(
     df,
@@ -854,13 +1029,13 @@ def plot_silhouette_for_k(
 
     plt.show()
 
-def plot_heatmap_barplot_clusters(df):
+def plot_heatmap_barplot_clusters(df, label):
     sns.set(style="whitegrid")
-    label_counts = df['labels'].value_counts().sort_index()
+    label_counts = df[label].value_counts().sort_index()
 
     fig, axes = plt.subplots(1,2, figsize=(12,5), width_ratios=[.6,.4], tight_layout=True)
     pop_mean = df.mean()
-    hc_profile = df.groupby('labels').mean().T
+    hc_profile = df.groupby(label).mean().T
     df_concat_pop = pd.concat([hc_profile, 
                            pd.Series(pop_mean, 
                                         index=hc_profile.index, 
@@ -880,4 +1055,288 @@ def plot_heatmap_barplot_clusters(df):
     axes[1].set_xlabel("Cluster Labels")
 
     fig.suptitle("Cluster Profiling:\nHierarchical Clustering with 4 Clusters")
+    plt.show()
+
+
+
+def plot_k_distance_curve(
+    df,
+    feature_cols,
+    n_neighbors=20,
+    eps_line=None,
+    figsize=(10, 6),
+    title="K-Distance Graph for eps Selection",
+    xlabel="Sorted Sample Index",
+    ylabel=None,
+    show=True,
+):
+    """
+    Computes and plots the K-distance curve used to estimate a suitable eps for DBSCAN.
+    """
+
+    if ylabel is None:
+        ylabel = f"Distance to {n_neighbors}th Nearest Neighbor"
+
+    # Fit NearestNeighbors
+    neigh = NearestNeighbors(n_neighbors=n_neighbors)
+    neigh.fit(df[feature_cols])
+
+    # Compute k-distances (last column of kneighbors output)
+    distances, _ = neigh.kneighbors(df[feature_cols])
+    distances = np.sort(distances[:, -1])  # take farthest neighbor, then sort
+
+    # Plot
+    plt.figure(figsize=figsize)
+    plt.plot(distances)
+
+    plt.title(title)
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    plt.grid(True)
+
+    # Optional eps candidate
+    if eps_line is not None:
+        plt.axhline(y=eps_line, color="red", linestyle="--", label=f"Candidate eps = {eps_line}")
+        plt.legend()
+
+    if show:
+        plt.show()
+
+
+def compute_gmm_bic_aic(
+    df,
+    feature_cols,
+    n_components_list,
+    covariance_types=("full", "tied", "diag", "spherical"),
+    random_state=1,
+    n_init=10,
+):
+    X = df[feature_cols]
+    rows = []
+
+    for cov in covariance_types:
+        for k in n_components_list:
+            gmm = GaussianMixture(
+                n_components=k,
+                covariance_type=cov,
+                n_init=n_init,
+                random_state=random_state
+            ).fit(X)
+
+            rows.append({
+                "n_components": k,
+                "covariance_type": cov,
+                "bic": gmm.bic(X),
+                "aic": gmm.aic(X),
+            })
+
+    return pd.DataFrame(rows)
+
+
+
+def plot_gmm_ic_scores(
+    ic_df,
+    x_col="n_components",
+    cov_col="covariance_type",
+    bic_col="bic",
+    aic_col="aic",
+    figsize=(12,5),
+    bic_title="BIC vs n_components",
+    aic_title="AIC vs n_components",
+    highlight_best=True
+):
+    """
+    Plots BIC and AIC curves from a Gaussian Mixture model tuning grid.
+    """
+
+    plt.figure(figsize=figsize)
+
+    # --- BIC subplot ---
+    ax1 = plt.subplot(1,2,1)
+    sns.lineplot(
+        data=ic_df,
+        x=x_col,
+        y=bic_col,
+        hue=cov_col,
+        marker="o",
+        ax=ax1
+    )
+    ax1.set_title(bic_title)
+    ax1.grid(True)
+
+
+
+    # --- AIC subplot ---
+    ax2 = plt.subplot(1,2,2)
+    sns.lineplot(
+        data=ic_df,
+        x=x_col,
+        y=aic_col,
+        hue=cov_col,
+        marker="s",
+        ax=ax2
+    )
+    ax2.set_title(aic_title)
+    ax2.grid(True)
+
+   
+
+    plt.tight_layout()
+    plt.show()
+
+
+
+
+def evaluate_final_cluster_models(
+    df,
+    feature_cols,
+    models_dict,
+    r2_fn
+):
+    """
+    Evaluate final clustering models with silhouette and R².
+    """
+    X = df[feature_cols]
+    rows = []
+
+    for name, clusterer in models_dict.items():
+        # fit + labels
+        if hasattr(clusterer, "fit_predict"):
+            labels = clusterer.fit_predict(X)
+        else:
+            clusterer.fit(X)
+            labels = clusterer.labels_
+
+        # silhouette
+        sil = silhouette_score(X, labels)
+
+        # R²
+        df_concat = pd.concat(
+            [df[feature_cols], pd.Series(labels, name="labels", index=df.index)],
+            axis=1
+        )
+        r2 = r2_fn(df_concat)
+
+        rows.append({
+            "model": name,
+            "silhouette": sil,
+            "r2": r2
+        })
+
+        print(f"{name}: silhouette={sil:.4f}, R²={r2:.4f}")
+
+    return pd.DataFrame(rows)
+
+
+
+def evaluate_final_cluster_models(
+    df,
+    feature_cols,
+    models_dict,
+    r2_fn
+):
+    """
+    Evaluate final clustering models with:
+    - Silhouette
+    - R²
+    - Calinski–Harabasz (CH)
+    - Davies–Bouldin Index (DBI)
+    """
+    X = df[feature_cols]
+    rows = []
+
+    for name, clusterer in models_dict.items():
+        # fit + labels
+        if hasattr(clusterer, "fit_predict"):
+            labels = clusterer.fit_predict(X)
+        else:
+            clusterer.fit(X)
+            labels = clusterer.labels_
+
+        n_clusters = len(np.unique(labels))
+
+        if n_clusters < 2:
+            print(f"{name}: only {n_clusters} cluster found → metrics set to NaN.")
+            sil = np.nan
+            ch = np.nan
+            dbi = np.nan
+        else:
+            # silhouette
+            sil = silhouette_score(X, labels)
+
+            # Calinski–Harabasz (higher is better)
+            ch = calinski_harabasz_score(X, labels)
+
+            # Davies–Bouldin (lower is better)
+            dbi = davies_bouldin_score(X, labels)
+
+      
+        df_concat = pd.concat(
+            [df[feature_cols], pd.Series(labels, name="labels", index=df.index)],
+            axis=1
+        )
+        r2 = r2_fn(df_concat)
+
+        rows.append({
+            "model": name,
+            "n_clusters": n_clusters,
+            "silhouette": sil,
+            "r2": r2,
+            "calinski_harabasz": ch,
+            "davies_bouldin": dbi
+        })
+
+        print(
+            f"{name}: silhouette={sil:.4f} | "
+            f"R²={r2:.4f} | "
+            f"CH={ch:.2f} | "
+            f"DBI={dbi:.4f}"
+            if n_clusters >= 2 else
+            f"{name}: R²={r2:.4f} (no valid cluster metrics)"
+        )
+
+    return pd.DataFrame(rows)
+
+
+
+def plot_parallel_cluster_profiles(
+    df,
+    label_col="labels",
+    figsize=(16,7),
+    colormap="tab10",
+    linewidth=2,
+    rotation=70,
+    baseline=True
+):
+    """
+    Plot a parallel coordinates chart for cluster mean profiles.
+
+    """
+
+    # Ensure labels are strings
+    
+    km_profile = df.groupby(label_col).mean().T
+    km_profile = km_profile.T.reset_index()
+    df_plot = km_profile.copy()
+    df_plot[label_col] = df_plot[label_col].astype(str)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    parallel_coordinates(
+        df_plot,
+        label_col,
+        colormap=colormap,
+        linewidth=linewidth,
+        ax=ax
+    )
+
+    # Optional horizontal reference line
+    if baseline:
+        ax.axhline(0, linestyle="-.", color="black", alpha=0.7)
+
+    ax.set_title("Cluster Profiling with KMeans Clustering:\nParallel Coordinates Plot")
+    ax.set_xlabel("Cluster Labels")
+    plt.xticks(rotation=rotation)
+
+    plt.tight_layout()
     plt.show()
