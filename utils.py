@@ -592,6 +592,84 @@ def _month_to_season(m: int) -> str:
         return "Holiday Peak"
     else:
         return "Unknown"
+    
+
+def add_peak_based_season_shares(
+    df: pd.DataFrame,
+    month_prefix: str = "Flights_Month_",
+    keep_intermediate: bool = True,
+) -> pd.DataFrame:
+    """
+    Add peak-based seasonal share features to a wide flights-per-month dataframe.
+
+    Assumptions:
+      - df has columns: Flights_Month_1, ..., Flights_Month_12 (or a different prefix).
+      - Each row corresponds to a customer (or customer-year) and contains monthly flights.
+      - We only use the maximum *value* in each season, not the month index.
+
+    Steps:
+      1. Define four seasons:
+         - LowSeasonEarlyYear: months 1, 2, 3, 5, 6
+         - PeakSeasonSummer:   months 7, 8
+         - Autumn:             months 9, 10, 11
+         - HolidayPeak:        month 12
+      2. For each season, compute the row-wise maximum flights within that season:
+         Max_Season = max over [Flights_Month_m for m in season_months]
+      3. Compute YearPeakTotal = sum of the four Max_Season values.
+      4. Compute SeasonShareInYear_Season = Max_Season / YearPeakTotal * 100.
+      5. Return the transformed dataframe.
+    """
+
+    out = df.copy()
+    print("Reading---")
+    # 1. Define months in each season
+    season_months = {
+        "LowSeasonEarlyYear": [1, 2, 3, 4, 5],   # Jan, Feb, Mar, May, Jun
+        "PeakSeasonSummer":   [6, 7, 8],            # Jul, Aug
+        "Autumn":             [9, 10, 11],       # Sep, Oct, Nov
+        "HolidayPeak":        [12],              # Dec
+    }
+
+    # 2. Compute the maximum number of flights in each season (row-wise max VALUE)
+    for season, months in season_months.items():
+        month_cols = [
+            f"{month_prefix}{m}"
+            for m in months
+            if f"{month_prefix}{m}" in out.columns
+        ]
+
+        if not month_cols:
+            # No matching columns found for this season (edge case)
+            out[f"Max_{season}"] = 0.0
+        else:
+            # Ensure numeric, then take max *value* across the season months
+            out[month_cols] = out[month_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
+            out[f"Max_{season}"] = out[month_cols].max(axis=1)
+            out[f"columns_{season}"]= ",".join(month_cols)
+
+    # 3. Total "peak flights" across all seasons
+    peak_cols = [f"Max_{s}" for s in season_months.keys()]
+    out["YearPeakTotal"] = out[peak_cols].sum(axis=1)
+
+    # 4. Avoid division by zero (no flights at all)
+    out["YearPeakTotal"] = out["YearPeakTotal"].replace(0, np.nan)
+
+    # 5. Compute peak-based seasonal share within the year (in %)
+    share_cols = []
+    for season in season_months.keys():
+        share_col = f"SeasonShareInYear_{season}"
+        out[share_col] = (out[f"Max_{season}"] / out["YearPeakTotal"]) * 100.0
+        share_cols.append(share_col)
+
+    # Replace NaNs (e.g. customers with no flights) by 0 in the new columns
+    out[["YearPeakTotal"] + share_cols] = out[["YearPeakTotal"] + share_cols].fillna(0.0)
+
+    # Optionally drop intermediate helper columns
+    if not keep_intermediate:
+        out = out.drop(columns=peak_cols + ["YearPeakTotal"])
+
+    return out
+
 
 def compute_seasonal_share_trends(
     flights_df,
